@@ -7,15 +7,16 @@
 #include <string.h>
 
 #define TRUE 1
-
 #define PIPE_NAME "/tmp/secondquestion"
 
 void* Thread_Client1(void* p);
 void* Thread_Client2(void* p);
+void Write(const char* buffer);
+void Read(char* buffer, size_t buffer_size);
 
 int main() {
     pthread_t client1, client2;
-    mkfifo(PIPE_NAME, 0666);
+
     mkfifo(PIPE_NAME, 0666);
 
     pthread_create(&client1, NULL, &Thread_Client1, NULL);
@@ -28,18 +29,13 @@ int main() {
 }
 
 void* Thread_Client1(void* p) {
-    int fd;
     char buffer[256];
 
     while (TRUE) {
-        fd = open(PIPE_NAME, O_WRONLY);
         fgets(buffer, sizeof(buffer), stdin);
-        write(fd, buffer, strlen(buffer) + 1);
-        close(fd);
+        Write(buffer);
 
-        fd = open(PIPE_NAME, O_RDONLY);
-        read(fd, buffer, sizeof(buffer));
-        close(fd);
+        Read(buffer, sizeof(buffer));
         printf("Client2: %s\n", buffer);
         sched_yield();
     }
@@ -47,20 +43,27 @@ void* Thread_Client1(void* p) {
 }
 
 void* Thread_Client2(void* p) {
-    int fd;
     char buffer[256];
 
     while (TRUE) {
-        fd = open(PIPE_NAME, O_RDONLY);
-        read(fd, buffer, sizeof(buffer));
-        close(fd);
+        Read(buffer, sizeof(buffer));
         printf("Client1: %s\n", buffer);
 
-        fd = open(PIPE_NAME, O_WRONLY);
         fgets(buffer, sizeof(buffer), stdin);
-        write(fd, buffer, strlen(buffer) + 1);
-        close(fd);
+        Write(buffer);
         sched_yield();
     }
     return 0;
+}
+
+void Write(const char* buffer) {
+    int fd = open(PIPE_NAME, O_WRONLY);
+    write(fd, buffer, strlen(buffer) + 1);
+    close(fd);
+}
+
+void Read(char* buffer, size_t buffer_size) {
+    int fd = open(PIPE_NAME, O_RDONLY);
+    read(fd, buffer, buffer_size);
+    close(fd);
 }
