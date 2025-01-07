@@ -9,17 +9,19 @@
 #include<string.h>
 #include<math.h>
 #include<signal.h>
+#include<sys/ipc.h>
+#include<sys/shm.h>
 
 #define TRUE 1
-#define Random(min, max) ((rand() % (int)(((max) + 1) - (min))) + (min))
-
+#define FALSE 0
+#define Random(min, max) (rand() % (int)((max - min)) + (min))
 
 #define FORKS_COUNT 3
 #define PHILOSOPHERS_COUNT 5
 #define MAX_CRITICS 2
-#define THINKING_CHANCE 10 
-#define CRITICISM_CHANCE 30 
-#define COMPLIMENTING_CHANCE 30
+#define THINKING_CHANCE 50 
+#define CRITICISM_CHANCE 100 
+#define COMPLIMENTING_CHANCE 100
 #define CRITICS_STOP_EATING_IMMEDIATELY TRUE
 
 const char* quotes[] = {
@@ -118,7 +120,15 @@ const char* criticism[] = {
 
 sem_t* forks[FORKS_COUNT];
 int critics[PHILOSOPHERS_COUNT];
-int speed = 20;
+int speed = 60;
+
+int *health;
+pthread_mutex_t health_mutex;
+key_t health_shm_key = 1234;
+
+int *stopped_eating;
+pthread_mutex_t stopped_eating_mutex;
+key_t stopped_eating_shm_key = 125;
 
 int Digits_Count(double number) {
     return (number == 0) ? 1 : (int)log10(number) + 1;
@@ -129,10 +139,34 @@ void Think(int id);
 void Signal_Handler(int sig);
 void Initialize_Semaphores();
 void Destroy_Semaphores();
+void Cleanup_Shared_Memory();
+void Initialize_Shared_Memory();
+void* Health_Decrease_Thread(void *arg);
+int Get_Lowest_Health();
+int Reset_Health(int index);
+int Should_Eat(int index);
 
-int main() {
+int main(int argc, char **argv) {
+    int given_speed = 0; 
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-speed") == 0 && i + 1 < argc) {
+            given_speed = atoi(argv[i + 1]);
+            break;  
+        }
+    }
+
+    if (given_speed > 0 && given_speed <= 100) {
+        printf("Set %d as speed\n", given_speed);
+        speed = given_speed;
+    } 
+
     signal(SIGINT, Signal_Handler);
     srand(time(NULL) + 21);
+
+    Initialize_Shared_Memory();
+    pthread_t health_thread;
+    pthread_create(&health_thread, NULL, Health_Decrease_Thread, NULL);
 
     Initialize_Semaphores();
 
@@ -147,12 +181,12 @@ int main() {
     for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
         pid_t pid = fork();
         if (pid < 0) {
-            perror("Fork failed");
-            exit(1);
+            printf("Fork failed\n");
+            return -1;
         }
         if (pid == 0) {
             Philosopher(i + 1);
-            exit(0);
+            return 0;
         }
     }
 
@@ -161,61 +195,79 @@ int main() {
     }
 
     Destroy_Semaphores();
+    Cleanup_Shared_Memory();
     return 0;
 }
 
 
 void Philosopher(int id) {
     while (1) {
-        srand(time(NULL) + id);
+        srand(time(NULL) + id + Random(1, 20));
         Think(id);
-
-        int taken_forks_count = 0;
-        int forks_taken[2] = {-1, -1};
-
-        for (int i = 0; i < FORKS_COUNT && taken_forks_count < 2; i++) {
-            if (sem_trywait(forks[i]) == 0) {
-                forks_taken[taken_forks_count++] = i;
-            }
-        }
-
-        if (taken_forks_count == 2) {
-            printf("Philosopher #%d took fork %d\n", id, forks_taken[0]);
-            printf("Philosopher #%d took fork %d\n", id, forks_taken[1]);
-            Eat(id);
-            printf("Philosopher #%d put down fork %d\n", id, forks_taken[0]);
-            printf("Philosopher #%d put down fork %d\n", id, forks_taken[1]);
-        }
-        else {
-            printf("Philosopher #%d didn't find enough forks to start eating\n", id);
-        }
-        for (int i = 0; i < taken_forks_count; i++)
-        {
-            sem_post(forks[forks_taken[i]]);
-        }
-        
+        Eat(id);
     }
 }
 
 void Eat(int id) {
-    printf("Philosopher #%d is eating.\n", id);
-    int sleep_time = Random(0, 1000) / speed;
-    sleep(sleep_time);
-    printf("Philosopher #%d finished eating.\n", id);
-
-    // Critic or compliment
-    if (critics[id - 1]) {
-        if (rand() % 100 < CRITICISM_CHANCE) {
-            int index_of_random_criticism = rand() % (sizeof(criticism) / sizeof(criticism[0]));
-            printf("Philosopher #%d says: %s\n", id, criticism[index_of_random_criticism]);
-            if (CRITICS_STOP_EATING_IMMEDIATELY) {
-                exit(1);
-            }
-        }
+    if (Should_Eat(id - 1) == FALSE) {
+        return;
     } 
+
+    int taken_forks_count = 0;
+    int forks_taken[2] = {-1, -1};
+
+    for (int i = 0; i < FORKS_COUNT && taken_forks_count < 2; i++) {
+        if (sem_trywait(forks[i]) == 0) {
+            forks_taken[taken_forks_count++] = i;
+        }
+    }
+    int should_exit = 0;
+    
+    if (taken_forks_count == 2) {
+        printf("Philosopher #%d took fork %d\n", id, forks_taken[0]);
+        printf("Philosopher #%d took fork %d\n", id, forks_taken[1]);
+        printf("Philosopher #%d is eating.\n", id);
+        pthread_mutex_lock(&health_mutex);
+        for (int i = 0; i < PHILOSOPHERS_COUNT; i++)
+        {
+            printf("Philosopher #%d has %d health\n", i + 1, health[i]);
+        }
+        pthread_mutex_unlock(&health_mutex);
+
+        int sleep_time = Random(speed, 1000) / speed;
+        sleep(sleep_time);
+        printf("Philosopher #%d finished eating.\n", id);
+
+        // Critic or compliment
+        if (critics[id - 1]) {
+            if (rand() % 100 < CRITICISM_CHANCE) {
+                int index_of_random_criticism = rand() % (sizeof(criticism) / sizeof(criticism[0]));
+                printf("Philosopher #%d says: %s\n", id, criticism[index_of_random_criticism]);
+                should_exit = CRITICS_STOP_EATING_IMMEDIATELY;
+            }
+        } 
+        else {
+            int index_of_random_compliments = rand() % (sizeof(compliments) / sizeof(compliments[0]));
+            printf("Philosopher #%d says: %s\n", id, compliments[index_of_random_compliments]);
+        }
+        printf("Philosopher #%d put down fork %d\n", id, forks_taken[0]);
+        printf("Philosopher #%d put down fork %d\n", id, forks_taken[1]);
+        Reset_Health(id - 1);
+    }
     else {
-        int index_of_random_compliments = rand() % (sizeof(compliments) / sizeof(compliments[0]));
-        printf("Philosopher #%d says: %s\n", id, compliments[index_of_random_compliments]);
+        printf("Philosopher #%d didn't find enough forks to start eating\n", id);
+    }
+
+    for (int i = 0; i < taken_forks_count; i++)
+    {
+        sem_post(forks[forks_taken[i]]);
+    }
+
+    if (should_exit) {
+        pthread_mutex_lock(&stopped_eating_mutex);
+        stopped_eating[id - 1] = TRUE;
+        pthread_mutex_unlock(&stopped_eating_mutex);
+        exit(1);
     }
 }
 
@@ -226,13 +278,14 @@ void Think(int id) {
         printf("Philosopher #%d says: %s\n", id, quotes[rand() % (sizeof(quotes) / sizeof(quotes[0]))]);
     }
 
-    int sleep_time = Random(0, 1000) / speed;
+    int sleep_time = Random(speed, 1000) / speed;
     sleep(sleep_time);
 }
 
 
 void Signal_Handler(int sig) {
     Destroy_Semaphores();
+    Cleanup_Shared_Memory();
     exit(1);
 }
 
@@ -252,4 +305,100 @@ void Destroy_Semaphores() {
         sprintf(fork_name, "fork%d", i);
         sem_unlink(fork_name);
     }
+}
+
+
+void Initialize_Shared_Memory() {
+    // Create shared memory
+    int shm_id = shmget(health_shm_key, PHILOSOPHERS_COUNT * sizeof(int), IPC_CREAT | 0666);
+    if (shm_id < 0) {
+        printf("Shared memory creation failed\n");
+        exit(1);
+    }
+    health = (int *)shmat(shm_id, NULL, 0);
+    if (health == (void *)-1) {
+        printf("Failed to attach shared memory\n");
+        exit(1);
+    }
+
+    //Initialize mutex for health
+    pthread_mutex_init(&health_mutex, NULL);
+
+    // Initialize health to 100 for all philosophers
+    for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
+        health[i] = 100;
+    }
+
+    shm_id = shmget(stopped_eating_shm_key, PHILOSOPHERS_COUNT * sizeof(int), IPC_CREAT | 0666);
+    if (shm_id < 0) {
+        printf("Shared memory creation failed\n");
+        exit(1);
+    }
+    stopped_eating = (int *)shmat(shm_id, NULL, 0);
+    if (stopped_eating == (void *)-1) {
+        printf("Failed to attach shared memory\n");
+        exit(1);
+    }
+
+    pthread_mutex_init(&stopped_eating_mutex, NULL);
+
+    for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
+        stopped_eating[i] = FALSE;
+    }
+}
+
+void Cleanup_Shared_Memory() {
+    //Detach and destroy shared memory
+    shmdt(health);
+    shmdt(stopped_eating);
+    pthread_mutex_destroy(&health_mutex);
+    pthread_mutex_destroy(&stopped_eating_mutex);
+}
+
+void* Health_Decrease_Thread(void *arg) {
+    while (TRUE) {
+        int sleep_time = Random(speed, 100) / speed;
+        sleep(sleep_time);
+        pthread_mutex_lock(&health_mutex);
+        for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
+            if (health[i] > 0) {
+                health[i]--;  // Decrease health by 1
+            }
+        }
+        pthread_mutex_unlock(&health_mutex);
+    }
+    return NULL;
+}
+
+int Get_Lowest_Health() {
+    pthread_mutex_lock(&health_mutex);
+    pthread_mutex_lock(&stopped_eating_mutex);
+    int min_health = 101;
+    for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
+        if (health[i] < min_health && stopped_eating[i] == FALSE) {
+            min_health = health[i];
+        }
+    }
+    pthread_mutex_unlock(&health_mutex);
+    pthread_mutex_unlock(&stopped_eating_mutex);
+    return min_health;
+}
+
+int Reset_Health(int index) {
+    pthread_mutex_lock(&health_mutex);
+    health[index] = 100;
+    pthread_mutex_unlock(&health_mutex);
+}
+
+int Should_Eat(int index) {
+    int min_health = Get_Lowest_Health();
+
+    pthread_mutex_lock(&health_mutex);
+    // Check if the philosopher has the lowest health
+    if (health[index] != min_health) {
+        pthread_mutex_unlock(&health_mutex);
+        return FALSE;
+    } 
+    pthread_mutex_unlock(&health_mutex);
+    return TRUE;
 }
