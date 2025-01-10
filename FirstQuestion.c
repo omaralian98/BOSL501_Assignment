@@ -21,7 +21,7 @@ void Signal_Handler(int signal);
 
 int main() {
     //Seed the Random.
-    srand(time(NULL));
+    srand(time(NULL) + getpid() + 21);
 
     //Create a child process.
     child_pid = fork();
@@ -74,6 +74,7 @@ void* Thread(void* p) {
     //Get the Id
     int thread_id = *(int*)p;
     printf("Thread number: #%d started working\n", thread_id);
+    sleep(2);
     pid_t parent_id = getppid();
     while (TRUE) {
         //Select a random signal.

@@ -19,6 +19,7 @@
 #define TRUE 1
 #define FALSE 0
 #define Random(min, max) (rand() % (int)((max - min)) + (min))
+#define ARRAY_SIZE(arr) ( sizeof((arr)) / sizeof((arr[0])) )
 #define MAX(a, b) a > b ? a : b
 #define MIN(a, b) a < b ? a : b
 
@@ -124,7 +125,7 @@ int change_chances_chance = 50;
 
 int speed = 40;
 int max_critics = 2;
-int should_log = TRUE;
+int should_log = FALSE;
 int thinking_chance = 15;
 int criticism_chance = 15;
 int complimenting_chance = 15;
@@ -258,7 +259,7 @@ void Think(int id, int ate) {
 
     //Randomly decide whether the philosopher will throw a random quote.
     if (Random(1, 101) < thinking_chance) {
-        printf("Philosopher #%d says: %s\n", id, quotes[Random(0, (sizeof(quotes) / sizeof(quotes[0])))]);
+        printf("Philosopher #%d says: %s\n", id, quotes[Random(0, ARRAY_SIZE(quotes))]);
     }
 
     //Get the interrupted seconds for logging purposes.
@@ -327,7 +328,7 @@ int Eat(int id) {
 
         // Critic or compliment
         if (critics[id - 1] && Random(1, 101) < criticism_chance) {
-            int index_of_random_criticism = Random(0, (sizeof(criticism) / sizeof(criticism[0])));
+            int index_of_random_criticism = Random(0, ARRAY_SIZE(criticism));
             printf("Philosopher #%d says: %s\n", id, criticism[index_of_random_criticism]);
 
             //Determine if the philosopher wants to exit or not.
@@ -350,7 +351,7 @@ int Eat(int id) {
             }
         } 
         else if (Random(1, 101) < complimenting_chance) {
-            int index_of_random_compliments = Random(0, (sizeof(compliments) / sizeof(compliments[0])));
+            int index_of_random_compliments = Random(0, ARRAY_SIZE(compliments));
             printf("Philosopher #%d says: %s\n", id, compliments[index_of_random_compliments]);
 
             //Pick a random reward to add it to the philosopher's health.
