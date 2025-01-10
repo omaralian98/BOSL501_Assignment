@@ -1,3 +1,7 @@
+/*
+    This is more like a game rather than a solution for a problem.
+*/
+
 #include<stdio.h>
 #include<stdlib.h>
 #include<unistd.h>
@@ -118,7 +122,7 @@ const char* criticism[] = {
 
 int change_chances_chance = 50;
 
-int speed = 60;
+int speed = 40;
 int max_critics = 2;
 int should_log = TRUE;
 int thinking_chance = 15;
@@ -161,20 +165,25 @@ void Print_Parameters();
 
 
 int main(int argc, char** argv) {
+    //Seed the Random.
     srand(time(NULL) + getpid() * 21);
 
+    //Set the parameters and print them.
     Set_Parameters(argc, argv);
     Print_Parameters();
 
+    //Set up the signal handlers To properly clean up the resources after terminating the program.
     signal(SIGINT, Signal_Handler);
     signal(SIGUSR1, Finished_Eating_Handler);
 
+    //Initialize the shared memory and semaphores.
     Initialize_Shared_Memory();
     Initialize_Semaphores();
 
     pthread_t health_thread;
     pthread_create(&health_thread, NULL, Health_Decrease_Thread, NULL);
 
+    //Create a new process for each philosopher.
     for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
         pid_t pid = fork();
         if (pid < 0) {
@@ -187,16 +196,19 @@ int main(int argc, char** argv) {
         }
     }
 
+    //Wait for the philosophers to finish.
     for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
         wait(NULL);
     }
 
+    //Clean up the resources.
     Cleanup_Shared_Memory();
     Destroy_Semaphores();
     return 0;
 }
 
 void Shuffle(int *array, int size) {
+    //Fisher–Yates shuffle a simple shuffling algorithm
     for (int i = 0; i < size; i++) {
         int j = Random(0, size);
         int temp = array[i];
@@ -206,15 +218,26 @@ void Shuffle(int *array, int size) {
 }
 
 void Philosopher(int id) {
+    //Set a signal handler. this handler is used to override the default behaviour.
     signal(SIGUSR1, Finished_Eating_Handler);
+
+    //Store whether the philosopher has eaten this cycle or not.
     int ate = 1;
 
     while (TRUE)
     {
+        //Seed the random and using the pid since it's always unique.
         srand(time(NULL) + id + Random(1, 20) * getpid());
+
+        //Starts thinking.
         Think(id, ate);
+
+        //Tries to eat.
         ate = Eat(id);
+
+        //If the philosopher want to stop eating. 
         if (ate == -1) {
+            //Mark this philosopher as finished eating.
             pthread_mutex_lock(&stopped_eating_mutex);
             stopped_eating[id - 1] = TRUE;
             pthread_mutex_unlock(&stopped_eating_mutex);
@@ -225,23 +248,28 @@ void Philosopher(int id) {
 }
 
 void Think(int id, int ate) {
+    //Picking a random thinking time from this range [1, 500] seconds.
     int sleep_time = Random(speed, 500) / speed;
 
+    //If the philosopher hasn't eaten this cycle then don't print.
     if (ate) {
         printf("Philosopher #%d is thinking for %ds\n", id, sleep_time);
     }
 
+    //Randomly decide whether the philosopher will throw a random quote.
     if (Random(1, 101) < thinking_chance) {
         printf("Philosopher #%d says: %s\n", id, quotes[Random(0, (sizeof(quotes) / sizeof(quotes[0])))]);
     }
 
-    int interputted = sleep(sleep_time);
-    if (should_log && interputted != 0) {
-        printf("Philosopher #%d 's sleep was interputted, %ds left to sleep\n",id,  interputted);
+    //Get the interrupted seconds for logging purposes.
+    int interrupted = sleep(sleep_time);
+    if (should_log && interrupted != 0) {
+        printf("Philosopher #%d 's sleep was interrupted, %ds left to sleep\n",id,  interrupted);
     }
 }
 
 int Eat(int id) {
+    //Determine if this philosopher should eat or not.
     if (Should_Eat(id - 1) == FALSE) {
         return FALSE;
     } 
@@ -249,6 +277,7 @@ int Eat(int id) {
     int taken_forks_count = 0;
     int forks_taken[2] = {-1, -1};
 
+    //This section is created for no reason.
     int forks_indices[FORKS_COUNT];
     for (int i = 0; i < FORKS_COUNT; i++) {
         forks_indices[i] = i;
@@ -256,6 +285,7 @@ int Eat(int id) {
 
     Shuffle(forks_indices, FORKS_COUNT);
 
+    //Attempt to acquire two forks.
     for (int i = 0; i < FORKS_COUNT && taken_forks_count < 2; i++) {
         int fork_index = forks_indices[i];
         if (sem_trywait(forks[fork_index]) == 0) {
@@ -265,14 +295,18 @@ int Eat(int id) {
 
     int should_exit = 0;
     
+    //If we have acquired two forks.
     if (taken_forks_count == 2) {
         printf("Philosopher #%d took fork %d\n", id, forks_taken[0]);
         printf("Philosopher #%d took fork %d\n", id, forks_taken[1]);
+
+        //Picking a random eating time from this range [1, 500] seconds.
         int sleep_time = Random(speed, 500) / speed;
         printf("Philosopher #%d is eating for %ds\n",id, sleep_time);
 
-        pthread_mutex_lock(&health_mutex);
+        //Log the health for each philosopher
         if (should_log) {
+            pthread_mutex_lock(&health_mutex);
             for (int i = 0; i < PHILOSOPHERS_COUNT; i++) {
                 if (stopped_eating[i]){
                     printf("\e[9m");
@@ -283,47 +317,54 @@ int Eat(int id) {
                     printf("Philosopher #%d has %d health\n", i + 1, health[i]);
                 }
             }
+            pthread_mutex_unlock(&health_mutex);
         }
-        pthread_mutex_unlock(&health_mutex);
 
         sleep(sleep_time);
         printf("Philosopher #%d finished eating.\n", id);
+        //Reset the health to 100 after finishing eating.
         Set_Health(id - 1, 100);
 
         // Critic or compliment
         if (critics[id - 1] && Random(1, 101) < criticism_chance) {
             int index_of_random_criticism = Random(0, (sizeof(criticism) / sizeof(criticism[0])));
             printf("Philosopher #%d says: %s\n", id, criticism[index_of_random_criticism]);
+
+            //Determine if the philosopher wants to exit or not.
             should_exit = critics_stop_eating_immediately;
+
+            //Pick a random penalty for criticizing the food and remove it form 
+            //the philosopher's health to make he in need of eating much often.
             int penalty = Random(1, speed / 4);
             Add_Health(id - 1, -penalty);
+            if (should_log) {
+                printf("Philosopher #%d lost \033[31m%d\e[0m health due to criticism\n", id, penalty);
+            }
 
+            //Randomly decide whether to reduce the criticism chance of this philosopher
             if (Random(0, 101) <= change_chances_chance) {
                 criticism_chance -= penalty / 2;
                 if (should_log && change_chances_chance > 0) {
                     printf("Philosopher #%d 's criticism chance increased by %d\n", id, penalty / 2);
                 }
             }
-
-            if (should_log) {
-                printf("Philosopher #%d lost \033[31m%d\e[0m health due to criticism\n", id, penalty);
-            }
         } 
         else if (Random(1, 101) < complimenting_chance) {
             int index_of_random_compliments = Random(0, (sizeof(compliments) / sizeof(compliments[0])));
             printf("Philosopher #%d says: %s\n", id, compliments[index_of_random_compliments]);
+
+            //Pick a random reward to add it to the philosopher's health.
             int reward = Random(1, speed / 2);
             Add_Health(id - 1, reward);
+            if (should_log) {
+                printf("Philosopher #%d gained \033[32m%d\e[0m health due to complimenting\n", id, reward);
+            }
 
             if (Random(0, 101) <= change_chances_chance) {
                 complimenting_chance += reward / 2;
                 if (should_log && complimenting_chance > 0) {
                     printf("Philosopher #%d 's complimenting chance increased by %d\n", id, reward / 2);
                 }
-            }
-
-            if (should_log) {
-                printf("Philosopher #%d gained \033[32m%d\e[0m health due to complimenting\n", id, reward);
             }
         }
 
@@ -334,15 +375,20 @@ int Eat(int id) {
         printf("Philosopher #%d wants to eat but he didn't find enough forks to start eating\n", id);
     }
 
+    //Release any acquired forks whether.
     for (int i = 0; i < taken_forks_count; i++) {
         sem_post(forks[forks_taken[i]]);
     }
 
+    //If the philosopher wants to stop eating.
     if (should_exit) {
         return -1;
     }
 
+    //If the philosopher has finished eating.
     if (taken_forks_count == 2) {
+        //Signal to the other philosophers that this philosopher has finished eating.
+        //So that they stop thinking and try to eat.
         kill(-getppid(), SIGUSR1);
         return TRUE;
     }
@@ -350,13 +396,16 @@ int Eat(int id) {
 }
 
 void Signal_Handler(int sig) {
+    //When the user send SIGINIT clean up the recourses.
     Destroy_Semaphores();
     Cleanup_Shared_Memory();
     exit(1);
 }
 
+//A signal handler just to override the default behaviour of SIGUSER1
 void Finished_Eating_Handler(int sig) {}
 
+//Initialize the semaphores using named semaphores.
 void Initialize_Semaphores() {
     for (int i = 0; i < FORKS_COUNT; i++) {
         int digits_count = Digits_Count(i);
@@ -366,6 +415,7 @@ void Initialize_Semaphores() {
     }
 }
 
+//Destroy the named semaphores.
 void Destroy_Semaphores() {
     for (int i = 0; i < FORKS_COUNT; i++) {
         int digits_count = Digits_Count(i);
@@ -423,6 +473,7 @@ void Cleanup_Shared_Memory() {
     pthread_mutex_destroy(&stopped_eating_mutex);
 }
 
+//Create this thread to keep decreasing the health of all the philosophers.
 void* Health_Decrease_Thread(void *arg) {
     while (TRUE) {
         int sleep_time = Random(speed, 101) / speed;
@@ -438,6 +489,7 @@ void* Health_Decrease_Thread(void *arg) {
     return NULL;
 }
 
+//This function get's the lowest health among all the philosopher who want to eat.
 int Get_Lowest_Health() {
     pthread_mutex_lock(&health_mutex);
     pthread_mutex_lock(&stopped_eating_mutex);
@@ -464,6 +516,8 @@ int Add_Health(int index, int healthToAdd) {
     pthread_mutex_unlock(&health_mutex);
 }
 
+//Determine whether the philosopher should eat.
+//A philosopher should eat when he has the lowest health among the others.
 int Should_Eat(int index) {
     int min_health = Get_Lowest_Health();
 
@@ -477,6 +531,7 @@ int Should_Eat(int index) {
     return TRUE;
 }
 
+//Set the given parameters.
 void Set_Parameters(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-speed") == 0 && i + 1 < argc) {
@@ -545,6 +600,8 @@ void Set_Parameters(int argc, char** argv) {
     }
 }
 
+//Print the acquired parameters or the default ones.
+//And make some philosophers hate the food.
 void Print_Parameters() {
     printf("\033[36m====================================================\n");
     printf("speed: %d%%\n", speed);
